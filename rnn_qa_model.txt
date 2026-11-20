@@ -1,0 +1,155 @@
+# ============================================================
+# Question Answering using a Simple RNN (PyTorch)
+# Dataset: 100_Unique_QA_Dataset.csv (columns: question, answer)
+# The model reads a question and predicts the first word of the answer.
+# ============================================================
+
+# ---------- 1. Imports ----------
+import re
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+
+
+# ---------- 2. Load the data ----------
+# Keep the CSV in the same folder as this file
+df = pd.read_csv("100_Unique_QA_Dataset.csv")
+print(df.head())
+
+
+# ---------- 3. Tokenizer ----------
+def tokenize(text):
+    text = text.lower()                    # lowercase
+    text = re.sub(r"[^\w\s]", "", text)    # remove punctuation
+    text = text.split()                    # split into words
+    return text
+
+
+# ---------- 4. Build vocabulary (word -> number) ----------
+vocab = {"<UK>": 0}
+
+
+def build_vocab(row):
+    tokenized_question = tokenize(row["question"])
+    tokenized_answer = tokenize(row["answer"])
+
+    merged_tokens = tokenized_question + tokenized_answer
+
+    for token in merged_tokens:
+        if token not in vocab:
+            vocab[token] = len(vocab)
+
+
+df.apply(build_vocab, axis=1)
+print("Vocab size:", len(vocab))
+
+
+# ---------- 5. Convert words to numbers ----------
+def text_to_indices(text, vocab):
+    indexed_text = []
+    for token in tokenize(text):
+        # unknown words become 0 (<UK>)
+        indexed_text.append(vocab.get(token, vocab["<UK>"]))
+    return indexed_text
+
+
+# ---------- 6. Custom Dataset ----------
+class QADataset(Dataset):
+    def __init__(self, df, vocab):
+        self.df = df
+        self.vocab = vocab
+
+    def __len__(self):
+        return self.df.shape[0]
+
+    def __getitem__(self, index):
+        numerical_question = text_to_indices(self.df.iloc[index]["question"], self.vocab)
+        numerical_answer = text_to_indices(self.df.iloc[index]["answer"], self.vocab)
+
+        return torch.tensor(numerical_question), torch.tensor(numerical_answer)
+
+
+dataset = QADataset(df, vocab)
+
+# batch_size=1 because questions have different lengths (no padding used)
+dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
+
+
+# ---------- 7. RNN Model ----------
+class SimpleRNN(nn.Module):
+    def __init__(self, vocab_size):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim=50)
+        self.rnn = nn.RNN(50, 64, batch_first=True)
+        self.fc = nn.Linear(64, vocab_size)
+
+    def forward(self, X):
+        embedded_question = self.embedding(X)
+        hidden, final = self.rnn(embedded_question)
+        output = self.fc(final.squeeze(0))
+        return output
+
+
+# ---------- 8. Settings ----------
+learning_rate = 0.001
+epochs = 20
+
+model = SimpleRNN(len(vocab))
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+
+# ---------- 9. Training loop ----------
+for epoch in range(epochs):
+    total_loss = 0
+
+    for question, answer in dataloader:
+        optimizer.zero_grad()
+
+        # forward pass
+        output = model(question)
+
+        # target = first word of the answer
+        target = answer[:, 0]
+
+        # loss
+        loss = criterion(output, target)
+
+        # gradients
+        loss.backward()
+
+        # update weights
+        optimizer.step()
+
+        total_loss = total_loss + loss.item()
+
+    print(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
+
+
+# ---------- 10. Prediction ----------
+def predict(model, question, threshold=0.5):
+    # question -> numbers
+    numerical_question = text_to_indices(question, vocab)
+
+    # numbers -> tensor with batch dimension
+    question_tensor = torch.tensor(numerical_question).unsqueeze(0)
+
+    # send to model
+    model.eval()
+    with torch.no_grad():
+        output = model(question_tensor)
+
+    # scores -> probabilities
+    probabilities = torch.nn.functional.softmax(output, dim=1)
+
+    # highest probability = predicted word
+    value, index = torch.max(probabilities, dim=1)
+
+    if value.item() < threshold:
+        print("I Don't know")
+    else:
+        print(list(vocab.keys())[index.item()])
+
+
+predict(model, "What is the capital of france")
